@@ -1,45 +1,73 @@
 import random
+import pandas as pd
+import pdfplumber
 import streamlit as st
-from pypdf import PdfReader
 
-st.set_page_config(page_title="PDF Lucky Draw Picker", page_icon="🎉", layout="centered")
+st.set_page_config(page_title="M-Pesa Lucky Draw Picker", page_icon="🎉", layout="centered")
 
-st.title("🎉 PDF Lucky Draw Winner Picker")
-st.write("Upload a PDF containing your list of participants, and let the app pick a winner at random!")
+st.title("🎉 M-Pesa Statement Lucky Draw")
+st.write("Upload your M-Pesa statement PDF, pick the column containing your participants (e.g., Names or Details), and choose a winner!")
 
 # File uploader
-uploaded_file = st.file_uploader("Upload Participant List (PDF)", type=["pdf"])
+uploaded_file = st.file_uploader("Upload M-Pesa Statement (PDF)", type=["pdf"])
 
 if uploaded_file is not None:
-    # Read PDF and extract text
-    try:
-        reader = PdfReader(uploaded_file)
-        participants = []
+    @st.cache_data
+    def extract_tables_from_pdf(file):
+        all_rows = []
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                for table in tables:
+                    for row in table:
+                        # Clean cells to remove None values or empty strings
+                        cleaned_row = [str(cell).strip() if cell else "" for cell in row]
+                        if any(cleaned_row): # Ignore completely empty rows
+                            all_rows.append(cleaned_row)
+        return all_rows
+
+    with st.spinner("Reading tables from M-Pesa statement... 📄"):
+        raw_data = extract_tables_from_pdf(uploaded_file)
+
+    if raw_data:
+        # Assume the first row or a row with text contains headers; fallback to generic column indices if needed
+        # Let's clean and structure into a Pandas DataFrame
+        df = pd.DataFrame(raw_data)
         
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                # Split text into lines and clean up whitespace
-                lines = text.split("\n")
-                for line in lines:
-                    cleaned_line = line.strip()
-                    if cleaned_line:  # Ignore empty lines
-                        participants.append(cleaned_line)
+        # Drop rows where everything is empty
+        df = df.dropna(how='all')
         
-        # Remove duplicates if desired, or keep as is
-        participants = list(dict.fromkeys(participants))
+        st.success("PDF tables successfully loaded!")
         
-        st.success(f"Successfully loaded **{len(participants)}** participants!")
+        st.write("### 1. Select the Column with Participants")
+        st.write("Preview of your statement structure:")
+        st.dataframe(df.head(5), use_container_width=True)
+
+        # Let user choose which column index to target
+        column_options = {f"Column {i} (Sample: {df.iloc[1, i] if len(df) > 1 else 'N/A'})": i for i in range(df.shape[1])}
+        selected_col_label = st.selectbox("Choose the column that has the names/phone numbers:", options=list(column_options.keys()))
         
-        # Preview participants in an expandable box
-        with st.expander("View Participant List"):
-            st.write(participants)
-            
-        # Pick winner button
+        selected_col_index = column_options[selected_col_label]
+
+        # Extract items from that specific column, dropping header/empty fields
+        participants = df.iloc[1:, selected_col_index].dropna().tolist()
+        # Clean whitespaces and filter out empty strings or typical headers
+        participants = [p.strip() for p in participants if p.strip() and not p.lower().startswith("details") and not p.lower().startswith("receipt")]
+        
+        # Remove duplicates option
+        remove_duplicates = st.checkbox("Remove duplicate entries (keep unique names/numbers only)", value=True)
+        if remove_duplicates:
+            participants = list(dict.fromkeys(participants))
+
+        st.info(f"Total unique entries found in this column: **{len(participants)}**")
+
         if participants:
+            with st.expander("Preview Selected Participants"):
+                st.write(participants)
+
             st.divider()
-            if st.button("🎲 Pick a Winner!", type="primary", use_container_width=True):
-                with st.spinner("Drumroll please... 🥁"):
+            if st.button("🎲 Pick a Winner from this Column!", type="primary", use_container_width=True):
+                with st.spinner("Spinning the wheel... 🥁"):
                     winner = random.choice(participants)
                 
                 st.balloons()
@@ -48,7 +76,7 @@ if uploaded_file is not None:
                 # **{winner}**! 🎊
                 """)
         else:
-            st.warning("No text could be extracted from this PDF. Please check the file formatting.")
+            st.warning("No valid entries found in this column. Please try choosing a different column.")
 
-    except Exception as e:
-        st.error(f"An error occurred while reading the PDF: {e}")
+    else:
+        st.error("Could not find structured tables in this PDF. Ensure it's a valid text-based M-Pesa statement.")
